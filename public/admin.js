@@ -23,6 +23,45 @@ async function refreshStatus() {
   if (!status.loggedIn) return;
   await Promise.all([loadAdminExams(), loadResults()]);
 }
+// Quick entry: "abcbabc" → Q1=A, Q2=B, Q3=C, Q4=B …
+// a-d / A-D / ক খ গ ঘ = answers; "?" or "_" = leave that question blank;
+// spaces, commas, dots, brackets, dashes and question numbers (e.g. "1.a 2.b") are ignored.
+// Any other character still takes a question slot (left blank) so later answers don't shift.
+const BANGLA_OPTIONS = { 'ক': 'A', 'খ': 'B', 'গ': 'C', 'ঘ': 'D' };
+function parseAnswerText(text) {
+  const answers = []; const invalid = [];
+  for (const ch of String(text)) {
+    const up = ch.toUpperCase();
+    if (['A', 'B', 'C', 'D'].includes(up)) answers.push(up);
+    else if (BANGLA_OPTIONS[ch]) answers.push(BANGLA_OPTIONS[ch]);
+    else if (ch === '?' || ch === '_') answers.push('');
+    else if (/[\s.,;:|/()\[\]\-0-9০-৯।]/.test(ch)) continue;
+    else { invalid.push({ ch, question: answers.length + 1 }); answers.push(''); }
+  }
+  return { answers, invalid };
+}
+function keySelects() { return [...$('answerKeyGrid').querySelectorAll('select')]; }
+function applyAnswerText() {
+  const { answers, invalid } = parseAnswerText($('answerText').value);
+  keySelects().forEach((sel, i) => { sel.value = answers[i] || ''; });
+  updateKeyProgress();
+  showAnswerTextStatus(answers.length, invalid);
+}
+function syncAnswerTextFromGrid() {
+  // Blank questions become "?" so positions stay aligned; trailing blanks are dropped.
+  $('answerText').value = keySelects().map(s => s.value ? s.value.toLowerCase() : '?').join('').replace(/\?+$/, '');
+  showAnswerTextStatus(parseAnswerText($('answerText').value).answers.length, []);
+}
+function showAnswerTextStatus(entered, invalid) {
+  const status = $('answerTextStatus'); const count = keySelects().length;
+  if (!$('answerText').value.trim()) { status.textContent = status.dataset.help; status.className = 'hint'; return; }
+  const parts = [];
+  if (invalid.length) parts.push(`অবৈধ অক্ষর: ${invalid.slice(0, 5).map(x => `"${x.ch}" (Q${x.question})`).join(', ')}${invalid.length > 5 ? ' …' : ''} — শুধু a/b/c/d লেখো।`);
+  if (entered > count) parts.push(`${entered}টি Answer লেখা হয়েছে কিন্তু MCQ সংখ্যা ${count} — শেষের ${entered - count}টি বাদ যাবে। দরকার হলে Number of MCQs বাড়াও।`);
+  else if (entered < count) parts.push(`${entered}/${count}টি Answer লেখা হয়েছে — আরও ${count - entered}টি বাকি।`);
+  if (!parts.length) { status.textContent = `✓ ${count}টি Answer ঠিকমতো বসেছে। নিচের তালিকায় মিলিয়ে নাও।`; status.className = 'hint ok'; return; }
+  status.textContent = parts.join(' '); status.className = 'hint warn';
+}
 function renderKeys() {
   const count = Math.max(1, Math.min(200, Number($('questionCount').value) || 1));
   const old = [...$('answerKeyGrid').querySelectorAll('select')].map(x => x.value);
@@ -34,10 +73,12 @@ function renderKeys() {
       const o = document.createElement('option'); o.value = option; o.textContent = option || '—'; sel.append(o);
     }
     sel.value = old[i] || '';
-    sel.addEventListener('change', updateKeyProgress);
+    sel.addEventListener('change', () => { updateKeyProgress(); syncAnswerTextFromGrid(); });
     label.append(sel); grid.append(label);
   }
-  updateKeyProgress();
+  // If answers were typed in Quick Entry, they win (e.g. raising the MCQ count fills the new questions).
+  if ($('answerText').value.trim()) applyAnswerText();
+  else updateKeyProgress();
 }
 function updateKeyProgress() {
   const answers = [...$('answerKeyGrid').querySelectorAll('select')].map(x => x.value);
@@ -80,6 +121,8 @@ $('loginForm').addEventListener('submit', async e => {
 });
 $('logout').addEventListener('click', async () => { await api('/api/admin/logout', { method: 'POST' }); showDashboard(false); });
 $('questionCount').addEventListener('input', renderKeys);
+$('answerTextStatus').dataset.help = $('answerTextStatus').textContent;
+$('answerText').addEventListener('input', applyAnswerText);
 $('negativeEnabled').addEventListener('change', () => $('negativeBox').classList.toggle('hidden', !$('negativeEnabled').checked));
 $('refreshResults').addEventListener('click', loadResults);
 $('refreshExams').addEventListener('click', loadAdminExams);
@@ -98,7 +141,7 @@ $('examForm').addEventListener('submit', async e => {
     const data = await api('/api/admin/exams', jsonOpts(payload));
     message(`Exam created! Student link: ${data.shareUrl}`, 'success');
     $('examForm').reset(); $('negativeBox').classList.add('hidden');
-    renderKeys(); await loadAdminExams();
+    renderKeys(); showAnswerTextStatus(0, []); await loadAdminExams();
   } catch (err) { message(err.message); }
   finally { btn.disabled = false; btn.textContent = 'Create Exam & Generate Link'; }
 });

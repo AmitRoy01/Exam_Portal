@@ -17,7 +17,11 @@
 <input id="driveUrl" type="url" required placeholder="https://drive.google.com/file/d/FILE_ID/view" autocomplete="url">
 <span class="hint">নিজের Google Drive-এর public folder-এ PDF/JPG/PNG upload করো → ওই <strong>file</strong>-এর Share → General access → Anyone with the link → Viewer → Copy link। Folder link নয়, file link paste করো।</span>
 </div>
-<div class="form-field wide"><div class="divider"></div><div class="section-title" style="margin:0"><h3>Correct Answer Key</h3><span id="keyProgress" class="chip">0/20 set</span></div><p class="muted small" style="margin-bottom:0">প্রতিটি Question-এর সঠিক Option নির্বাচন করো।</p><div id="answerKeyGrid" class="answer-key"></div></div>
+<div class="form-field wide"><div class="divider"></div><div class="section-title" style="margin:0"><h3>Correct Answer Key</h3><span id="keyProgress" class="chip">0/20 set</span></div><p class="muted small" style="margin-bottom:0">নিচের বক্সে সব Answer পরপর লেখো, অথবা প্রতিটি Question-এর Option আলাদাভাবে নির্বাচন করো।</p>
+<div class="form-field" style="margin:12px 0 10px"><label for="answerText">Quick Entry — সব Answer একসাথে</label>
+<textarea id="answerText" class="answer-text" rows="2" placeholder="যেমন: abcbabc  →  1. A, 2. B, 3. C, 4. B …" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+<span id="answerTextStatus" class="hint">a/b/c/d (বা ক/খ/গ/ঘ) পরপর লেখো — 1ম অক্ষর = Q1, 2য় = Q2 …। Space, কমা ও নম্বর (যেমন "1.a 2.b") উপেক্ষা করা হবে। কোনো প্রশ্ন ফাঁকা রাখতে ? দাও।</span></div>
+<div id="answerKeyGrid" class="answer-key"></div></div>
 <div class="form-field wide"><button type="submit" class="btn full" id="createButton">Create Exam & Generate Link</button></div></form></section>
 <div><section class="card"><div class="section-title" style="margin-top:0"><h2>Google Drive — Manual Upload</h2><span class="chip green">No OAuth required</span></div>
 <p class="muted small">এই অ্যাপ Google Drive-এ ফাইল upload করে না। তুমি নিজে Drive-এ upload করবে, আর Create Exam ফর্মে শুধু <strong>individual PDF/Image file link</strong> paste করবে।</p>
