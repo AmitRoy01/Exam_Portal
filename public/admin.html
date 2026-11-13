@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="bn"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Teacher Dashboard — MCQ Exam Portal</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<header class="topbar"><a class="brand" href="/"><span class="brand-icon">Q</span> MCQ Exam Portal</a><nav class="navlinks"><a href="/">Student Portal</a><a href="/admin.html" class="active">Teacher Dashboard</a><button id="logout" class="btn ghost small hidden">Logout</button></nav></header>
+<main class="container">
+<section id="loginPanel" class="card narrow" style="margin:40px auto"><div class="chip blue" style="margin-bottom:12px">Teacher access</div><h1 style="font-size:27px;margin-bottom:6px">Welcome back</h1><p class="muted">Exam তৈরি করতে Teacher Password দিয়ে Login করো।</p><form id="loginForm" class="form-field"><label for="teacherPassword">Teacher Password</label><input id="teacherPassword" type="password" autocomplete="current-password" required><button class="btn" type="submit">Login to Dashboard</button></form><div id="loginMsg" class="alert error hidden" style="margin-top:12px"></div></section>
+<section id="dashboard" class="hidden"><div class="section-title"><div><h1 style="margin:0">Teacher Dashboard</h1><div class="muted small">Create exams from public Google Drive file links and view results</div></div></div>
+<div id="globalMsg" class="alert hidden" role="status" style="margin-bottom:15px"></div>
+<div class="admin-grid"><section class="card"><div class="section-title" style="margin-top:0"><h2>Create Exam</h2><span class="chip blue">1 mark per MCQ</span></div>
+<form id="examForm" class="form-grid"><div class="form-field wide"><label for="examTitle">Exam Name *</label><input id="examTitle" maxlength="150" placeholder="Physics Chapter 03 — Weekly Test" required></div>
+<div class="form-field"><label for="questionCount">Number of MCQs *</label><input id="questionCount" type="number" min="1" max="200" value="20" required></div>
+<div class="form-field"><label for="examDuration">Duration (minutes) *</label><input id="examDuration" type="number" min="1" max="360" value="20" required></div>
+<div class="form-field wide"><label class="toggle-line"><input id="negativeEnabled" type="checkbox"> Enable Negative Marking</label><span class="hint">Wrong answer-এর জন্য প্রতি প্রশ্নের 1 mark থেকে নির্ধারিত % কাটা হবে। Unanswered প্রশ্নে কাটবে না।</span></div>
+<div class="form-field wide hidden" id="negativeBox"><label for="negativePercentage">Negative Marking (%)</label><input id="negativePercentage" type="number" min="0" max="100" step="0.01" value="25"><span class="hint">যেমন 25% মানে প্রতিটি wrong answer-এ 0.25 mark কাটা হবে।</span></div>
+<div class="form-field wide"><div class="divider"></div>
+<label for="driveUrl">Google Drive PDF/Image File Link *</label>
+<input id="driveUrl" type="url" required placeholder="https://drive.google.com/file/d/FILE_ID/view" autocomplete="url">
+<span class="hint">নিজের Google Drive-এর public folder-এ PDF/JPG/PNG upload করো → ওই <strong>file</strong>-এর Share → General access → Anyone with the link → Viewer → Copy link। Folder link নয়, file link paste করো।</span>
+</div>
+<div class="form-field wide"><div class="divider"></div><div class="section-title" style="margin:0"><h3>Correct Answer Key</h3><span id="keyProgress" class="chip">0/20 set</span></div><p class="muted small" style="margin-bottom:0">প্রতিটি Question-এর সঠিক Option নির্বাচন করো।</p><div id="answerKeyGrid" class="answer-key"></div></div>
+<div class="form-field wide"><button type="submit" class="btn full" id="createButton">Create Exam & Generate Link</button></div></form></section>
+<div><section class="card"><div class="section-title" style="margin-top:0"><h2>Google Drive — Manual Upload</h2><span class="chip green">No OAuth required</span></div>
+<p class="muted small">এই অ্যাপ Google Drive-এ ফাইল upload করে না। তুমি নিজে Drive-এ upload করবে, আর Create Exam ফর্মে শুধু <strong>individual PDF/Image file link</strong> paste করবে।</p>
+<ol class="muted small" style="padding-left:20px;line-height:1.9">
+<li>Google Drive-এর public folder খুলে PDF/Image upload করো।</li>
+<li>ফাইলটি Share → <strong>Anyone with the link → Viewer</strong> করো।</li>
+<li>Copy link করে উপরের field-এ paste করো।</li>
+<li>Incognito window-এ link খুলে যাচাই করো যে sign-in ছাড়া file দেখা যায়।</li>
+</ol>
+<a class="btn secondary full" href="https://drive.google.com/drive/my-drive" target="_blank" rel="noopener noreferrer">Open Google Drive</a>
+<p class="hint" style="margin-top:10px">শুধু public folder link নয় — student-কে প্রশ্ন দেখাতে অবশ্যই individual file-এর share link দিতে হবে।</p></section>
+<section class="card"><div class="section-title" style="margin-top:0"><h2>Created Exams</h2><button class="btn secondary small" id="refreshExams" type="button">Refresh</button></div><div id="adminExams" class="muted small">Loading…</div></section></div></div>
+<section class="card" style="margin-top:20px"><div class="section-title" style="margin-top:0"><div><h2>Student Results</h2><div class="muted tiny">MongoDB-তে শুধু Student Name, Exam Name এবং Mark সংরক্ষিত।</div></div><button class="btn secondary small" id="refreshResults" type="button">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>#</th><th>Student Name</th><th>Exam Name</th><th>Mark</th></tr></thead><tbody id="resultsBody"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody></table></div></section>
+</section></main><script src="/admin.js" defer></script></body></html>
