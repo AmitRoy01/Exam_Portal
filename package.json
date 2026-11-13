@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check netlify/functions/api.js && node --check netlify/functions/auto-grade.js && node --check server.js && node --check logic.js && node --check public/admin.js && node --check public/exam.js && node --check public/student.js",
+    "check": "node --check api/index.js && node --check netlify/functions/api.js && node --check netlify/functions/auto-grade.js && node --check server.js && node --check logic.js && node --check public/admin.js && node --check public/exam.js && node --check public/student.js",
     "test": "node --test tests/*.test.js"
   },
   "engines": {

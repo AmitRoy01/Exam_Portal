@@ -165,6 +165,31 @@ Alternatively, with the Netlify CLI: `npm i -g netlify-cli`, `netlify login`, `n
 
 > Scheduled Functions only run on the **published production deploy**, not in deploy previews. Students who return to the exam page after the deadline are also graded immediately, so results are never lost.
 
+### Vercel
+
+The repo is also ready for Vercel (`vercel.json`):
+
+- `public/` is served by Vercel's CDN with the same security headers; `/admin` and `/exam` map to their `.html` pages.
+- `/api/*` is rewritten to the Vercel Function `api/index.js`, which runs the Express app.
+- A **Vercel Cron Job** calls `/api/cron/auto-grade` once a day (`0 3 * * *`, the most the Hobby plan allows). On a Pro plan you can change it to `* * * * *` in `vercel.json`.
+- Expired attempts are also graded when a student reopens their exam page, and **every time the teacher opens Student Results**, so the results list is always complete even with the daily cron.
+
+Steps:
+
+1. **MongoDB Atlas → Network Access → `0.0.0.0/0`** (Vercel functions have no fixed IP).
+2. Push the code to GitHub (**without `.env`**). In Vercel: **Add New… → Project → Import** the repo. Leave *Framework Preset* as **Other** and the build settings as they are (they come from `vercel.json`).
+3. **Settings → Environment Variables** (Production) — add:
+   - `MONGODB_URI`
+   - `ADMIN_PASSWORD` — at least 12 characters
+   - `SESSION_SECRET` — at least 32 characters
+   - `CRON_SECRET` — any long random string (required for the cron endpoint; Vercel sends it automatically)
+   - `NODE_ENV=production` (optional — the function defaults to production)
+   - `PUBLIC_URL` — optional, only for a custom domain. **Do not** copy `PORT` or a `localhost` `PUBLIC_URL`.
+4. **Deploy** (redeploy after changing variables). Check `https://YOUR-PROJECT.vercel.app/api/health` → `{"ok":true}`.
+5. Log in at `/admin.html`, create a test exam, take it from another device, and confirm the result appears.
+
+CLI alternative: `npm i -g vercel`, `vercel login`, `vercel link`, `vercel env add NAME production`, `vercel --prod`.
+
 ### Other Node.js hosts
 
 Use a Node.js hosting provider (e.g. Render/Railway/VPS) and MongoDB Atlas:
@@ -200,6 +225,8 @@ server.js                 Express server; exams, attempts, grading, timer, Mongo
 netlify.toml              Netlify build, redirects, headers, schedule
 netlify/functions/api.js  Netlify Function wrapping the Express app
 netlify/functions/auto-grade.js  Scheduled Function grading expired attempts
+vercel.json               Vercel build, rewrites, headers, cron
+api/index.js              Vercel Function exporting the Express app
 logic.js                  Drive file-link validation and scoring
 public/admin.html         Teacher Dashboard
 public/admin.js           Teacher interactions

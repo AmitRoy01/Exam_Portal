@@ -21,15 +21,18 @@ if (process.env.NODE_ENV === 'production' && (ADMIN_PASSWORD.length < 12 || SESS
 const isProduction = process.env.NODE_ENV === 'production';
 // Set by netlify/functions/*.js before requiring this file.
 const onNetlify = process.env.RUNNING_ON_NETLIFY === '1';
+// Vercel sets VERCEL=1 in its runtime (and in `vercel dev`).
+const onVercel = process.env.VERCEL === '1';
+const serverless = onNetlify || onVercel;
 const configuredBaseUrl = PUBLIC_URL ? PUBLIC_URL.replace(/\/$/, '') : '';
-// Without PUBLIC_URL, build links from the request's own host (works on any Netlify domain).
+// Without PUBLIC_URL, build links from the request's own host (works on any Netlify/Vercel domain).
 function baseUrlFor(req) { return configuredBaseUrl || `${req.protocol}://${req.get('host')}`; }
 
 // One cached connection per process / serverless container (reused across warm invocations).
 let connectionPromise = null;
 function connectDb() {
   if (!connectionPromise) {
-    connectionPromise = mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: onNetlify ? 8000 : 15000, maxPoolSize: onNetlify ? 5 : 100 })
+    connectionPromise = mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: serverless ? 8000 : 15000, maxPoolSize: serverless ? 5 : 100 })
       .then(async m => {
         await m.connection.collection('rate_limits').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
         return m;
@@ -101,7 +104,7 @@ const Attempt = mongoose.model('Attempt', attemptSchema);
 const Result = mongoose.model('Result', resultSchema);
 
 const app = express();
-if (isProduction || onNetlify) app.set('trust proxy', 1);
+if (isProduction || serverless) app.set('trust proxy', 1);
 app.disable('x-powered-by');
 // Netlify may deliver the rewritten path (/.netlify/functions/api/...) instead of the original /api/...
 app.use((req, res, next) => {
@@ -197,8 +200,10 @@ function attemptView(a, exam) {
   };
 }
 
-// On Netlify the real client IP is in x-nf-client-connection-ip (set by Netlify's edge, not the browser).
-function clientKey(req) { return (onNetlify && req.get('x-nf-client-connection-ip')) || req.ip || 'unknown'; }
+// The real client IP is set by the platform's edge (not the browser): x-nf-client-connection-ip on Netlify, x-real-ip on Vercel.
+function clientKey(req) {
+  return (onNetlify && req.get('x-nf-client-connection-ip')) || (onVercel && req.get('x-real-ip')) || req.ip || 'unknown';
+}
 const limiterDefaults = { standardHeaders: 'draft-7', legacyHeaders: false, keyGenerator: clientKey };
 const loginLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: 12, store: new MongoRateLimitStore('login:'), message: { error: 'Too many attempts. Try later.' } });
 const startLimiter = rateLimit({ ...limiterDefaults, windowMs: 60 * 1000, limit: 15, store: new MongoRateLimitStore('start:'), message: { error: 'Too many requests. Try again in a minute.' } });
@@ -251,6 +256,9 @@ app.patch('/api/admin/exams/:id/toggle', requireAdmin, async (req, res, next) =>
 });
 app.get('/api/admin/results', requireAdmin, async (req, res, next) => {
   try {
+    // Grade any finished-but-ungraded attempts first, so the list is complete even where the
+    // background grader runs rarely (e.g. Vercel Hobby cron runs only once a day).
+    try { await gradeExpiredAttempts(200); } catch (err) { console.error('Pre-results grading failed', err); }
     const results = await Result.find().select('studentName examName mark').sort({ _id: -1 }).limit(2000).lean();
     res.json(results.map(r => ({ studentName: r.studentName, examName: r.examName, mark: r.mark })));
   } catch (e) { next(e); }
@@ -324,6 +332,22 @@ app.post('/api/attempts/submit', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+// Called by Vercel Cron (vercel.json). Vercel sends "Authorization: Bearer $CRON_SECRET" when CRON_SECRET is set.
+app.get('/api/cron/auto-grade', async (req, res, next) => {
+  try {
+    const secret = process.env.CRON_SECRET;
+    if (secret && !comparePassword(req.get('authorization') || '', `Bearer ${secret}`)) return fail(res, 'Unauthorized.', 401);
+    if (!secret && isProduction) return fail(res, 'Set CRON_SECRET to enable this endpoint.', 403);
+    let graded = 0;
+    const startedAt = Date.now();
+    for (;;) {
+      const n = await gradeExpiredAttempts(100);
+      graded += n;
+      if (n < 100 || Date.now() - startedAt > 20000) break;
+    }
+    res.json({ graded });
+  } catch (e) { next(e); }
+});
 app.use((err, req, res, next) => {
   console.error(err);
   if (res.headersSent) return next(err);
