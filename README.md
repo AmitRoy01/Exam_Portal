@@ -139,6 +139,34 @@ To keep a secure server-side timer, saved answers and the mapping between studen
 
 ## 9. Deployment
 
+### Netlify (recommended)
+
+The repo is ready for Netlify (`netlify.toml`):
+
+- `public/` is served by Netlify's CDN, with the same security headers helmet sets.
+- `/api/*` is rewritten to the `api` Netlify Function (`netlify/functions/api.js`), which runs the Express app.
+- `auto-grade` (`netlify/functions/auto-grade.js`) is a **Scheduled Function** that runs every minute and grades expired attempts (replaces the local 30-second timer).
+- Login / exam-start rate limits are stored in MongoDB (`rate_limits` collection), so they hold across serverless instances.
+
+Steps:
+
+1. **MongoDB Atlas → Network Access → Add IP Address → `0.0.0.0/0`** (Netlify functions have no fixed IP).
+2. Push the code to GitHub/GitLab (**without `.env`**), then in Netlify: **Add new site → Import an existing project** and pick the repo. Build settings come from `netlify.toml` — leave them as they are.
+3. **Site configuration → Environment variables** — add (scope: *Functions*, or *All*):
+   - `MONGODB_URI`
+   - `ADMIN_PASSWORD` — at least 12 characters
+   - `SESSION_SECRET` — at least 32 characters, e.g. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+   - `NODE_ENV=production` (optional — functions default to production)
+   - `PUBLIC_URL` — optional; only if you use a custom domain and want share links to always use it. **Do not** copy `PORT` or a `localhost` `PUBLIC_URL`.
+4. Deploy (**Deploys → Trigger deploy** after adding variables). Open `https://YOUR-SITE.netlify.app/api/health` — it should return `{"ok":true}`.
+5. Log in at `/admin.html`, create a test exam, take it from another device, and confirm the result appears.
+
+Alternatively, with the Netlify CLI: `npm i -g netlify-cli`, `netlify login`, `netlify init` (or `netlify link`), set the variables with `netlify env:set NAME value`, then `netlify deploy --prod`. `netlify dev` runs the Netlify setup locally using `.env`.
+
+> Scheduled Functions only run on the **published production deploy**, not in deploy previews. Students who return to the exam page after the deadline are also graded immediately, so results are never lost.
+
+### Other Node.js hosts
+
 Use a Node.js hosting provider (e.g. Render/Railway/VPS) and MongoDB Atlas:
 
 1. Push the project code to your own private repository, **without `.env`**.
@@ -169,6 +197,9 @@ npm test
 
 ```
 server.js                 Express server; exams, attempts, grading, timer, MongoDB
+netlify.toml              Netlify build, redirects, headers, schedule
+netlify/functions/api.js  Netlify Function wrapping the Express app
+netlify/functions/auto-grade.js  Scheduled Function grading expired attempts
 logic.js                  Drive file-link validation and scoring
 public/admin.html         Teacher Dashboard
 public/admin.js           Teacher interactions

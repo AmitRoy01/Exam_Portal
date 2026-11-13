@@ -11,16 +11,59 @@ const path = require('node:path');
 
 const { MONGODB_URI, ADMIN_PASSWORD, SESSION_SECRET, PUBLIC_URL } = process.env;
 const PORT = Number(process.env.PORT || 3000);
+// Throw instead of process.exit() so a serverless function reports the error instead of being killed.
 if (!MONGODB_URI || !ADMIN_PASSWORD || !SESSION_SECRET) {
-  console.error('Missing MONGODB_URI, ADMIN_PASSWORD or SESSION_SECRET. Copy .env.example to .env and configure.');
-  process.exit(1);
+  throw new Error('Missing MONGODB_URI, ADMIN_PASSWORD or SESSION_SECRET. Copy .env.example to .env (or set them in your hosting provider) and configure.');
 }
 if (process.env.NODE_ENV === 'production' && (ADMIN_PASSWORD.length < 12 || SESSION_SECRET.length < 32)) {
-  console.error('For production set ADMIN_PASSWORD >= 12 characters and SESSION_SECRET >= 32 characters.');
-  process.exit(1);
+  throw new Error('For production set ADMIN_PASSWORD >= 12 characters and SESSION_SECRET >= 32 characters.');
 }
-const baseUrl = (PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const isProduction = process.env.NODE_ENV === 'production';
+// Set by netlify/functions/*.js before requiring this file.
+const onNetlify = process.env.RUNNING_ON_NETLIFY === '1';
+const configuredBaseUrl = PUBLIC_URL ? PUBLIC_URL.replace(/\/$/, '') : '';
+// Without PUBLIC_URL, build links from the request's own host (works on any Netlify domain).
+function baseUrlFor(req) { return configuredBaseUrl || `${req.protocol}://${req.get('host')}`; }
+
+// One cached connection per process / serverless container (reused across warm invocations).
+let connectionPromise = null;
+function connectDb() {
+  if (!connectionPromise) {
+    connectionPromise = mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: onNetlify ? 8000 : 15000, maxPoolSize: onNetlify ? 5 : 100 })
+      .then(async m => {
+        await m.connection.collection('rate_limits').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+        return m;
+      })
+      .catch(err => { connectionPromise = null; throw err; });
+  }
+  return connectionPromise;
+}
+// Never rejects: keeps retrying, so a transient MongoDB failure can't leave the session store permanently broken.
+function waitForMongoClient() {
+  return connectDb().then(m => m.connection.getClient(),
+    () => new Promise(resolve => setTimeout(resolve, 2000)).then(waitForMongoClient));
+}
+
+// Rate-limit counters live in MongoDB, so limits hold across all serverless instances (memory would reset per instance).
+class MongoRateLimitStore {
+  constructor(prefix) { this.prefix = prefix; this.localKeys = false; }
+  init(options) { this.windowMs = options.windowMs; }
+  collection() { return mongoose.connection.collection('rate_limits'); }
+  async increment(key) {
+    const now = new Date();
+    const doc = await this.collection().findOneAndUpdate({ _id: this.prefix + key }, [
+      { $set: { _expired: { $or: [{ $not: ['$expiresAt'] }, { $lte: ['$expiresAt', now] }] } } },
+      { $set: {
+        hits: { $cond: ['$_expired', 1, { $add: ['$hits', 1] }] },
+        expiresAt: { $cond: ['$_expired', new Date(now.getTime() + this.windowMs), '$expiresAt'] }
+      } },
+      { $unset: '_expired' }
+    ], { upsert: true, returnDocument: 'after' });
+    return { totalHits: doc.hits, resetTime: doc.expiresAt };
+  }
+  async decrement(key) { await this.collection().updateOne({ _id: this.prefix + key, hits: { $gt: 0 } }, { $inc: { hits: -1 } }); }
+  async resetKey(key) { await this.collection().deleteOne({ _id: this.prefix + key }); }
+}
 
 const examSchema = new mongoose.Schema({
   title: { type: String, required: true, maxlength: 150 },
@@ -58,8 +101,14 @@ const Attempt = mongoose.model('Attempt', attemptSchema);
 const Result = mongoose.model('Result', resultSchema);
 
 const app = express();
-if (isProduction) app.set('trust proxy', 1);
+if (isProduction || onNetlify) app.set('trust proxy', 1);
 app.disable('x-powered-by');
+// Netlify may deliver the rewritten path (/.netlify/functions/api/...) instead of the original /api/...
+app.use((req, res, next) => {
+  const fnPrefix = '/.netlify/functions/api';
+  if (req.url === fnPrefix || req.url.startsWith(fnPrefix + '/') || req.url.startsWith(fnPrefix + '?')) req.url = '/api' + req.url.slice(fnPrefix.length);
+  next();
+});
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -74,15 +123,18 @@ app.use(helmet({
   }
 }));
 app.use(express.json({ limit: '64kb' }));
+app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'], maxAge: '15m' }));
+// Make sure MongoDB is connected before any API handler runs (needed on serverless cold starts).
+app.use('/api', (req, res, next) => { connectDb().then(() => next(), next); });
 app.use(session({
   name: 'drive_mcq_sid',
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  store: MongoStore.create({ mongoUrl: MONGODB_URI, collectionName: 'web_sessions', ttl: 12 * 3600 }),
+  // Share the mongoose connection instead of opening a second MongoDB client.
+  store: MongoStore.create({ clientPromise: waitForMongoClient(), collectionName: 'web_sessions', ttl: 12 * 3600 }),
   cookie: { httpOnly: true, secure: isProduction, sameSite: 'lax', maxAge: 12 * 3600 * 1000 }
 }));
-app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'], maxAge: '15m' }));
 
 function fail(res, message, status = 400) { return res.status(status).json({ error: message }); }
 function requireAdmin(req, res, next) { if (!req.session.admin) return fail(res, 'Teacher login required.', 401); next(); }
@@ -145,8 +197,11 @@ function attemptView(a, exam) {
   };
 }
 
-const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Too many attempts. Try later.' } });
-const startLimiter = rateLimit({ windowMs: 60 * 1000, limit: 15, standardHeaders: 'draft-7', legacyHeaders: false });
+// On Netlify the real client IP is in x-nf-client-connection-ip (set by Netlify's edge, not the browser).
+function clientKey(req) { return (onNetlify && req.get('x-nf-client-connection-ip')) || req.ip || 'unknown'; }
+const limiterDefaults = { standardHeaders: 'draft-7', legacyHeaders: false, keyGenerator: clientKey };
+const loginLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: 12, store: new MongoRateLimitStore('login:'), message: { error: 'Too many attempts. Try later.' } });
+const startLimiter = rateLimit({ ...limiterDefaults, windowMs: 60 * 1000, limit: 15, store: new MongoRateLimitStore('start:'), message: { error: 'Too many requests. Try again in a minute.' } });
 app.get('/api/admin/status', (req, res) => res.json({ loggedIn: !!req.session.admin }));
 app.post('/api/admin/login', loginLimiter, (req, res) => {
   if (!comparePassword(req.body?.password || '', ADMIN_PASSWORD)) return fail(res, 'Wrong teacher password.', 401);
@@ -174,14 +229,14 @@ app.post('/api/admin/exams', requireAdmin, async (req, res, next) => {
     if (!driveFileId) return fail(res, 'Paste the individual Google Drive PDF/image file share link (not a folder link).');
     const exam = await Exam.create({ title, questionCount, durationMinutes, negativePercentage,
       answerKey, driveFileId });
-    res.status(201).json({ exam: publicExam(exam, true), shareUrl: `${baseUrl}/exam.html?id=${exam._id}` });
+    res.status(201).json({ exam: publicExam(exam, true), shareUrl: `${baseUrlFor(req)}/exam.html?id=${exam._id}` });
   } catch (e) { next(e); }
 });
 app.get('/api/admin/exams', requireAdmin, async (req, res, next) => {
   try {
     const exams = await Exam.find().sort({ createdAt: -1 }).lean();
     res.json(exams.map(e => ({ ...publicExam(e), active: e.active,
-      createdAt: e.createdAt, shareUrl: `${baseUrl}/exam.html?id=${e._id}` })));
+      createdAt: e.createdAt, shareUrl: `${baseUrlFor(req)}/exam.html?id=${e._id}` })));
   } catch (e) { next(e); }
 });
 app.patch('/api/admin/exams/:id/toggle', requireAdmin, async (req, res, next) => {
@@ -276,17 +331,25 @@ app.use((err, req, res, next) => {
   return fail(res, status >= 500 && status !== 502 ? 'Server error.' : err.message, status);
 });
 
+// Grades attempts whose deadline passed, even if the student closed the tab.
+// Runs on a 30s timer locally, and as a Netlify Scheduled Function (netlify/functions/auto-grade.js) in production.
+async function gradeExpiredAttempts(limit = 100) {
+  await connectDb();
+  const expired = await Attempt.find({ status: { $in: ['active', 'grading'] }, deadlineAt: { $lte: new Date() } }).limit(limit).select('_id');
+  let graded = 0;
+  for (const item of expired) {
+    try { await finalizeAttempt(item._id); graded++; } catch (err) { console.error('Auto-grade failed', item._id, err); }
+  }
+  return graded;
+}
+
 async function startup() {
-  await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 15000 });
-  // Each started attempt gets graded on the server when its deadline passes, even if the student closes the tab.
-  const expiredTimer = setInterval(async () => {
-    try {
-      const expired = await Attempt.find({ status: { $in: ['active', 'grading'] }, deadlineAt: { $lte: new Date() } }).limit(100).select('_id');
-      for (const item of expired) { try { await finalizeAttempt(item._id); } catch (err) { console.error('Auto-grade failed', item._id, err); } }
-    } catch (err) { console.error('Expired-attempt scan failed', err); }
+  await connectDb();
+  const expiredTimer = setInterval(() => {
+    gradeExpiredAttempts().catch(err => console.error('Expired-attempt scan failed', err));
   }, 30000);
   expiredTimer.unref();
-  app.listen(PORT, () => console.log(`Drive MCQ Exam running at ${baseUrl}`));
+  app.listen(PORT, () => console.log(`Drive MCQ Exam running at ${configuredBaseUrl || `http://localhost:${PORT}`}`));
 }
 if (require.main === module) startup().catch(e => { console.error('Startup failed:', e); process.exit(1); });
-module.exports = { app, Exam, Attempt, Result, parseDriveFileId, validAnswerList, scoreExam, cleanAnswers };
+module.exports = { app, connectDb, gradeExpiredAttempts, Exam, Attempt, Result, parseDriveFileId, validAnswerList, scoreExam, cleanAnswers };
